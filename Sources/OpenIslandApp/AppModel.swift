@@ -1558,7 +1558,13 @@ final class AppModel {
             return
         }
 
-        guard suppressFrontmostNotifications else {
+        // A session completing is a discrete "done" signal the user wants
+        // even while watching that session's terminal. Only in-progress
+        // surfaces (permission / question prompts) stay suppressed for the
+        // focused session; completion always pops.
+        let isCompletionNotification = session.phase == .completed
+
+        guard suppressFrontmostNotifications, !isCompletionNotification else {
             presentNotificationSurface(surface)
             return
         }
