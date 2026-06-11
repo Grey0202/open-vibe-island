@@ -284,29 +284,50 @@ public enum ClaudeHookInstaller {
             return true
         }
 
-        return isLegacyOpenIslandHookCommand(command)
+        return isOwnManagedHookCommand(command)
     }
 
     private static func isManagedHookForInstall(_ hook: [String: Any], replacingCommand: String) -> Bool {
-        if isManagedHook(hook, managedCommand: replacingCommand) {
-            return true
-        }
-
         guard let command = hook["command"] as? String else {
             return false
         }
 
-        return isLegacyOpenIslandHookCommand(command)
-    }
-
-    private static func isLegacyOpenIslandHookCommand(_ command: String) -> Bool {
-        let normalized = command.lowercased()
-        if (normalized.contains("openislandhooks") || normalized.contains("vibeislandhooks")) && normalized.contains("--source claude") {
+        if command == replacingCommand {
             return true
         }
 
-        return (normalized.contains("open-island-bridge") || normalized.contains("vibe-island-bridge"))
-            && normalized.contains("claude")
+        return isStrippableLegacyHookCommand(command)
+    }
+
+    /// Commands that prove *our own* Claude hooks (Open Island, or the legacy
+    /// OSS Vibe Island binary / `open-island-bridge` launcher) are installed.
+    ///
+    /// This deliberately does NOT match the closed-source Vibe Island launcher
+    /// (`vibe-island-bridge`): that binary forwards to a different app on a
+    /// different socket. Treating it as "ours" made install-state detection
+    /// believe Open Island was already wired up on any machine that had the
+    /// commercial app installed, so `shouldAutoInstall` stayed false and the
+    /// app never took over the hooks. Used only for install-state checks.
+    private static func isOwnManagedHookCommand(_ command: String) -> Bool {
+        let normalized = command.lowercased()
+        if (normalized.contains("openislandhooks") || normalized.contains("vibeislandhooks"))
+            && normalized.contains("--source claude") {
+            return true
+        }
+
+        return normalized.contains("open-island-bridge") && normalized.contains("claude")
+    }
+
+    /// Commands an install should strip/replace: a superset of our own managed
+    /// commands plus the closed-source `vibe-island-bridge` launcher, so
+    /// installing Open Island cleanly removes a previous commercial wiring.
+    private static func isStrippableLegacyHookCommand(_ command: String) -> Bool {
+        if isOwnManagedHookCommand(command) {
+            return true
+        }
+
+        let normalized = command.lowercased()
+        return normalized.contains("vibe-island-bridge") && normalized.contains("claude")
     }
 
     private static func shellQuote(_ string: String) -> String {
