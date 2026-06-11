@@ -536,6 +536,18 @@ final class AppModel {
     @ObservationIgnored
     private var notificationPresentationTask: Task<Void, Never>?
 
+    /// Wall-clock time each session entered its current `.running` stretch,
+    /// used to tell a quick conversational reply from a long-running task when
+    /// deciding whether a completion notification should pop while the
+    /// session's own terminal is frontmost. Keyed by session id.
+    private var runningTurnStartBySession: [String: Date] = [:]
+
+    /// A completed turn only overrides frontmost-notification suppression when
+    /// it ran at least this long. Shorter turns (back-and-forth chat) stay
+    /// suppressed while the user is looking at that terminal, matching the
+    /// intent of `suppressFrontmostNotifications`.
+    private static let frontmostCompletionMinimumTurnDuration: TimeInterval = 30
+
     private static func appearanceDefaultsKey(_ profile: IslandAppearanceDisplayProfile, _ name: String) -> String {
         "appearance.island.v8.\(profile.rawValue).\(name)"
     }
@@ -1498,6 +1510,7 @@ final class AppModel {
         }
 
         state.apply(event)
+        trackRunningTurnStart(for: event)
         reconcileIslandSurfaceAfterStateChange()
         if ingress == .bridge {
             monitoring.markSessionAttached(for: event)
@@ -1513,23 +1526,7 @@ final class AppModel {
 
         // Push relevant events to the Watch/iPhone via the relay
         if let relay = watchRelay {
-            let eventSessionID: String? = {
-                switch event {
-                case let .sessionStarted(p): return p.sessionID
-                case let .activityUpdated(p): return p.sessionID
-                case let .permissionRequested(p): return p.sessionID
-                case let .questionAsked(p): return p.sessionID
-                case let .sessionCompleted(p): return p.sessionID
-                case let .jumpTargetUpdated(p): return p.sessionID
-                case let .sessionMetadataUpdated(p): return p.sessionID
-                case let .claudeSessionMetadataUpdated(p): return p.sessionID
-                case let .geminiSessionMetadataUpdated(p): return p.sessionID
-                case let .openCodeSessionMetadataUpdated(p): return p.sessionID
-                case let .cursorSessionMetadataUpdated(p): return p.sessionID
-                case let .actionableStateResolved(p): return p.sessionID
-                }
-            }()
-            let session = eventSessionID.flatMap { state.session(id: $0) }
+            let session = state.session(id: event.sessionID)
             relay.notifyEvent(event, session: session)
         }
 
@@ -1546,6 +1543,34 @@ final class AppModel {
         }
     }
 
+    /// Records when a session enters a `.running` stretch so the completion
+    /// handler can measure how long the turn took. Keyed by the agent session
+    /// id string (the same key `IslandSurface.sessionID` uses).
+    private func trackRunningTurnStart(for event: AgentEvent) {
+        let sessionID = event.sessionID
+        guard let session = state.session(id: sessionID) else {
+            return
+        }
+
+        if session.phase == .running {
+            if runningTurnStartBySession[sessionID] == nil {
+                runningTurnStartBySession[sessionID] = Date.now
+            }
+        }
+    }
+
+    /// Whether the just-completed turn ran long enough to count as a real task
+    /// (vs. a quick reply). Consumes the recorded start time. Defaults to
+    /// `true` when no start was observed, so completions are never silently
+    /// dropped just because the running transition wasn't seen.
+    private func completedTurnWasLongRunning(sessionID: String) -> Bool {
+        guard let start = runningTurnStartBySession.removeValue(forKey: sessionID) else {
+            return true
+        }
+
+        return Date.now.timeIntervalSince(start) >= Self.frontmostCompletionMinimumTurnDuration
+    }
+
     private func scheduleNotificationSurfacePresentationIfNeeded(
         _ surface: IslandSurface,
         wasAlreadyCompleted: Bool,
@@ -1558,13 +1583,16 @@ final class AppModel {
             return
         }
 
-        // A session completing is a discrete "done" signal the user wants
-        // even while watching that session's terminal. Only in-progress
-        // surfaces (permission / question prompts) stay suppressed for the
-        // focused session; completion always pops.
-        let isCompletionNotification = session.phase == .completed
+        // A session completing is a discrete "done" signal the user wants even
+        // while watching that session's terminal — but only when it was a real
+        // task, not a quick conversational reply. Long-running completions
+        // override frontmost suppression; short ones stay suppressed (avoiding
+        // a banner after every turn). In-progress surfaces (permission /
+        // question prompts) keep frontmost suppression regardless.
+        let overridesFrontmostSuppression = session.phase == .completed
+            && completedTurnWasLongRunning(sessionID: sessionID)
 
-        guard suppressFrontmostNotifications, !isCompletionNotification else {
+        guard suppressFrontmostNotifications, !overridesFrontmostSuppression else {
             presentNotificationSurface(surface)
             return
         }

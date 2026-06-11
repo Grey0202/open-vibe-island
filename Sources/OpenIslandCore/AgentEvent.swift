@@ -252,6 +252,24 @@ public enum AgentEvent: Equatable, Codable, Sendable {
     case cursorSessionMetadataUpdated(CursorSessionMetadataUpdated)
     case actionableStateResolved(ActionableStateResolved)
 
+    /// The session this event applies to. Every payload carries one.
+    public var sessionID: String {
+        switch self {
+        case let .sessionStarted(p): p.sessionID
+        case let .activityUpdated(p): p.sessionID
+        case let .permissionRequested(p): p.sessionID
+        case let .questionAsked(p): p.sessionID
+        case let .sessionCompleted(p): p.sessionID
+        case let .jumpTargetUpdated(p): p.sessionID
+        case let .sessionMetadataUpdated(p): p.sessionID
+        case let .claudeSessionMetadataUpdated(p): p.sessionID
+        case let .geminiSessionMetadataUpdated(p): p.sessionID
+        case let .openCodeSessionMetadataUpdated(p): p.sessionID
+        case let .cursorSessionMetadataUpdated(p): p.sessionID
+        case let .actionableStateResolved(p): p.sessionID
+        }
+    }
+
     private enum CodingKeys: String, CodingKey {
         case type
         case sessionStarted
