@@ -114,6 +114,34 @@ extension AgentSession {
         jumpTarget?.terminalApp
     }
 
+    /// Agent display prefixes used when no real terminal title was captured,
+    /// producing synthetic pane titles like `Claude 1a2b3c4d`. We must not
+    /// surface these as the row headline — they carry no per-session meaning.
+    private static let syntheticPaneTitlePrefixes: Set<String> = [
+        "Claude", "Codex", "Gemini", "Cursor", "OpenCode",
+        "Qoder", "Qwen", "Factory", "CodeBuddy", "Kimi",
+    ]
+
+    /// The real terminal tab / pane title for this session, when one was
+    /// captured. Returns `nil` for synthetic placeholders so callers can fall
+    /// back to the workspace name. Used as the row headline so the island
+    /// label matches what the user sees in their terminal tab bar.
+    var spotlightPaneTitle: String? {
+        guard let raw = jumpTarget?.paneTitle.trimmedForSurface, !raw.isEmpty else {
+            return nil
+        }
+
+        let tokens = raw.split(separator: " ")
+        if tokens.count == 2,
+           Self.syntheticPaneTitlePrefixes.contains(String(tokens[0])),
+           tokens[1].count <= 8,
+           tokens[1].allSatisfy({ $0.isHexDigit || $0.isLetter || $0.isNumber }) {
+            return nil
+        }
+
+        return raw
+    }
+
     var spotlightWorkspaceName: String {
         if let workspaceName = jumpTarget?.workspaceName.trimmedForSurface,
            !workspaceName.isEmpty {
@@ -168,7 +196,10 @@ extension AgentSession {
     }
 
     var spotlightHeadlineText: String {
-        var headline = spotlightWorkspaceName
+        // Prefer the real terminal tab title so the island row matches what
+        // the user sees in their terminal tab bar; fall back to the cwd-based
+        // workspace name when no meaningful pane title was captured.
+        var headline = spotlightPaneTitle ?? spotlightWorkspaceName
 
         if let branch = spotlightWorktreeBranch {
             headline += " (\(branch))"

@@ -1445,7 +1445,10 @@ private struct IslandSessionRow: View {
 
     private var notificationWorkspaceHeadlineText: String {
         let workspace = session.spotlightWorkspaceName.trimmedForNotificationCard
-        let title = workspace.isEmpty ? session.tool.displayName : workspace
+        let paneTitle = session.spotlightPaneTitle?.trimmedForNotificationCard
+        let resolved = (paneTitle?.isEmpty == false ? paneTitle : nil)
+            ?? (workspace.isEmpty ? nil : workspace)
+        let title = resolved ?? session.tool.displayName
         guard let branch = session.spotlightWorktreeBranch?.trimmedForNotificationCard,
               !branch.isEmpty else {
             return title
