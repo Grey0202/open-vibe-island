@@ -1957,6 +1957,17 @@ public final class BridgeServer: @unchecked Sendable {
            !existingUUID.isEmpty {
             merged.warpPaneUUID = existingUUID
         }
+        // The real terminal tab title is only captured on focus-guaranteed
+        // hooks (SessionStart / UserPromptSubmit). Later hooks fall back to a
+        // synthetic `<Agent> <id>` placeholder, which must not clobber a real
+        // title resolved earlier — otherwise the session row would flip from
+        // its tab name back to a meaningless placeholder mid-session.
+        if JumpTarget.isSyntheticPaneTitle(merged.paneTitle),
+           let existingTitle = existing?.paneTitle,
+           !existingTitle.isEmpty,
+           !JumpTarget.isSyntheticPaneTitle(existingTitle) {
+            merged.paneTitle = existingTitle
+        }
         return merged
     }
 

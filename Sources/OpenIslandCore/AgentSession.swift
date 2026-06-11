@@ -175,6 +175,36 @@ public struct JumpTarget: Equatable, Codable, Sendable {
     }
 }
 
+extension JumpTarget {
+    /// Agent display prefixes used to build synthetic pane titles like
+    /// `Claude 1a2b3c4d` when no real terminal title was captured (see the
+    /// `paneTitle:` generators in the per-agent hook models). Detection lives
+    /// here, next to the generators, so the App-layer headline filter and the
+    /// bridge merge logic agree on one definition instead of drifting apart.
+    private static let syntheticPaneTitlePrefixes: Set<String> = [
+        "Claude", "Codex", "Gemini", "Cursor",
+    ]
+
+    /// True when `title` looks like a generated `<Agent> <id-prefix>`
+    /// placeholder rather than a real terminal tab title. The id prefix is
+    /// `sessionID.prefix(8)` — for the UUID-style session ids these agents use
+    /// that is up to 8 hex characters, so we only treat short hex suffixes as
+    /// synthetic. Real titles like `Claude main` (non-hex token) are kept.
+    public static func isSyntheticPaneTitle(_ title: String) -> Bool {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokens = trimmed.split(separator: " ")
+        guard tokens.count == 2,
+              syntheticPaneTitlePrefixes.contains(String(tokens[0])) else {
+            return false
+        }
+
+        let suffix = tokens[1]
+        return suffix.count >= 4
+            && suffix.count <= 8
+            && suffix.allSatisfy(\.isHexDigit)
+    }
+}
+
 public struct PermissionRequest: Equatable, Identifiable, Codable, Sendable {
     public var id: UUID
     public var title: String

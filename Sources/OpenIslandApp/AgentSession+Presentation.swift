@@ -114,28 +114,15 @@ extension AgentSession {
         jumpTarget?.terminalApp
     }
 
-    /// Agent display prefixes used when no real terminal title was captured,
-    /// producing synthetic pane titles like `Claude 1a2b3c4d`. We must not
-    /// surface these as the row headline — they carry no per-session meaning.
-    private static let syntheticPaneTitlePrefixes: Set<String> = [
-        "Claude", "Codex", "Gemini", "Cursor", "OpenCode",
-        "Qoder", "Qwen", "Factory", "CodeBuddy", "Kimi",
-    ]
-
     /// The real terminal tab / pane title for this session, when one was
     /// captured. Returns `nil` for synthetic placeholders so callers can fall
     /// back to the workspace name. Used as the row headline so the island
-    /// label matches what the user sees in their terminal tab bar.
+    /// label matches what the user sees in their terminal tab bar. Synthetic
+    /// detection lives on `JumpTarget` so it stays in sync with the generators.
     var spotlightPaneTitle: String? {
-        guard let raw = jumpTarget?.paneTitle.trimmedForSurface, !raw.isEmpty else {
-            return nil
-        }
-
-        let tokens = raw.split(separator: " ")
-        if tokens.count == 2,
-           Self.syntheticPaneTitlePrefixes.contains(String(tokens[0])),
-           tokens[1].count <= 8,
-           tokens[1].allSatisfy({ $0.isHexDigit || $0.isLetter || $0.isNumber }) {
+        guard let raw = jumpTarget?.paneTitle.trimmedForSurface,
+              !raw.isEmpty,
+              !JumpTarget.isSyntheticPaneTitle(raw) else {
             return nil
         }
 

@@ -1030,8 +1030,19 @@ public extension ClaudeHookPayload {
                 payload.terminalTitle = nil
                 useLocator = false
             }
+        } else if shouldUseFocusedTerminalLocator(for: payload.terminalApp ?? "") {
+            // iTerm / Terminal locators (like Ghostty's) return the *focused*
+            // tab. With several concurrent agents, a background session's
+            // PreToolUse/Stop hook would otherwise capture whichever tab the
+            // user is looking at and stamp that tab's title/id onto the wrong
+            // session — cross-contaminating the island's session labels.
+            // Restrict the locator to focus-guaranteed events; the per-process
+            // tty (resolved above) and the title captured at session start
+            // (preserved through the bridge merge) cover the rest.
+            useLocator = payload.hookEventName == .sessionStart
+                || payload.hookEventName == .userPromptSubmit
         } else {
-            useLocator = shouldUseFocusedTerminalLocator(for: payload.terminalApp ?? "")
+            useLocator = false
         }
 
         if useLocator, let terminalApp = payload.terminalApp {
