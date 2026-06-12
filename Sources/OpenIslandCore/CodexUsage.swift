@@ -31,6 +31,30 @@ public struct CodexUsageWindow: Equatable, Codable, Sendable, Identifiable {
     public var roundedUsedPercentage: Int {
         Int(usedPercentage.rounded())
     }
+
+    /// Codex usage is read from the last `rate_limits` entry in the latest
+    /// rollout file — a snapshot from when Codex last ran. If Codex hasn't run
+    /// since, that value never changes, so a fully-used window keeps reporting
+    /// 100% long after `resetsAt` has passed. Once the reset time is in the
+    /// past the window has rolled over; report it as reset rather than stale.
+    public func hasReset(asOf now: Date) -> Bool {
+        guard let resetsAt else { return false }
+        return now >= resetsAt
+    }
+
+    /// `usedPercentage`, but 0 once the window's `resetsAt` has elapsed.
+    public func effectiveUsedPercentage(asOf now: Date) -> Double {
+        hasReset(asOf: now) ? 0 : usedPercentage
+    }
+
+    /// Returns a copy with the percentages zeroed when the window has reset.
+    public func adjustedForReset(asOf now: Date) -> CodexUsageWindow {
+        guard hasReset(asOf: now) else { return self }
+        var copy = self
+        copy.usedPercentage = 0
+        copy.leftPercentage = 100
+        return copy
+    }
 }
 
 public struct CodexUsageSnapshot: Equatable, Codable, Sendable {
@@ -56,6 +80,14 @@ public struct CodexUsageSnapshot: Equatable, Codable, Sendable {
 
     public var isEmpty: Bool {
         windows.isEmpty
+    }
+
+    /// A copy with every window's usage zeroed once its reset time has passed,
+    /// so a stale snapshot from a finished window stops reporting old usage.
+    public func adjustedForReset(asOf now: Date) -> CodexUsageSnapshot {
+        var copy = self
+        copy.windows = windows.map { $0.adjustedForReset(asOf: now) }
+        return copy
     }
 }
 

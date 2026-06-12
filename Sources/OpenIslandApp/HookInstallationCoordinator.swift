@@ -779,7 +779,10 @@ final class HookInstallationCoordinator {
                 let snapshot = try await Task.detached(priority: .utility) {
                     try CodexUsageLoader.load()
                 }.value
-                self.codexUsageSnapshot = snapshot
+                // The loaded snapshot is the last value Codex wrote; if a
+                // window's reset time has since passed, surface it as reset
+                // instead of the stale used percentage.
+                self.codexUsageSnapshot = snapshot?.adjustedForReset(asOf: .now)
             } catch {
                 self.onStatusMessage?("Failed to read Codex usage state: \(error.localizedDescription)")
             }
@@ -1090,7 +1093,11 @@ final class HookInstallationCoordinator {
 
             while !Task.isCancelled {
                 self.refreshCodexUsageState()
-                try? await Task.sleep(for: .seconds(120))
+                // 30s, not 120s: the rollout file rarely changes between Codex
+                // turns, but we re-evaluate window reset times against the
+                // wall clock here, so a window that resets while Codex is idle
+                // clears within 30s instead of up to two minutes.
+                try? await Task.sleep(for: .seconds(30))
             }
         }
     }
