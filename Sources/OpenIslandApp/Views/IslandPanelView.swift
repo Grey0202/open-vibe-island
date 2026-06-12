@@ -1285,7 +1285,7 @@ private struct IslandSessionRow: View {
                 if showsDetail,
                    let promptLine = summaryPromptLineText {
                     Text(promptLine)
-                        .font(.system(size: 11.2, weight: .medium))
+                        .font(.system(size: 11.2, weight: .regular))
                         .foregroundStyle(summaryPromptColor(for: presence))
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -1323,7 +1323,7 @@ private struct IslandSessionRow: View {
         if !shouldShowEmbeddedDetailBody,
            let activityLine = session.spotlightActivityLineText ?? expandedActivityLineText {
             Text(activityLine)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 11, weight: .regular))
                 .foregroundStyle(activityColor(for: presence).opacity(0.94))
                 .lineLimit(2)
                 .padding(.leading, detailLeadingInset)
