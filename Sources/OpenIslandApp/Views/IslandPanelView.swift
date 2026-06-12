@@ -2632,13 +2632,18 @@ extension MarkdownUI.Theme {
         .text {
             ForegroundColor(.white.opacity(0.88))
             FontSize(13.5)
-            FontWeight(.medium)
+            FontWeight(.regular)
+        }
+        .paragraph { configuration in
+            configuration.label
+                .relativeLineSpacing(.em(0.18))
+                .markdownMargin(top: 0, bottom: 8)
         }
         .link {
             ForegroundColor(.blue)
         }
         .strong {
-            FontWeight(.bold)
+            FontWeight(.semibold)
         }
         .code {
             FontFamilyVariant(.monospaced)
