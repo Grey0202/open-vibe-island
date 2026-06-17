@@ -183,20 +183,20 @@ extension AgentSession {
     }
 
     var spotlightHeadlineText: String {
-        // Prefer the real terminal tab title so the island row matches what
-        // the user sees in their terminal tab bar; fall back to the cwd-based
-        // workspace name when no meaningful pane title was captured.
-        var headline = spotlightPaneTitle ?? spotlightWorkspaceName
+        // Topic-first: the conversation's initial prompt distinguishes sessions
+        // far better than the terminal tab name, which is frequently a generic
+        // "Claude <dir>" shared by every session in the same directory. Only
+        // when no prompt was captured (e.g. a transcript-discovered session
+        // with no hook metadata) do we fall back to the tab title / workspace.
+        if let prompt = spotlightHeadlinePromptText, !prompt.isEmpty {
+            return prompt
+        }
 
+        var headline = spotlightPaneTitle ?? spotlightWorkspaceName
         if let branch = spotlightWorktreeBranch {
             headline += " (\(branch))"
         }
-
-        guard let prompt = spotlightHeadlinePromptText else {
-            return headline
-        }
-
-        return "\(headline) · \(prompt)"
+        return headline
     }
 
     var spotlightHeadlinePromptText: String? {
@@ -212,6 +212,13 @@ extension AgentSession {
     var spotlightPromptLineText: String? {
         guard spotlightShowsDetailLines,
               let prompt = spotlightPromptText else {
+            return nil
+        }
+
+        // The headline now leads with the initial prompt. On a single-turn
+        // session the latest prompt equals it, so suppress the redundant
+        // "You:" line; keep it only when the latest prompt has moved on.
+        if prompt == spotlightHeadlinePromptText {
             return nil
         }
 
