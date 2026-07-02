@@ -1677,7 +1677,14 @@ private struct IslandSessionRow: View {
                     .buttonStyle(IslandActionButtonStyle(kind: .secondary, expands: true))
                 Button(session.permissionRequest?.primaryActionTitle ?? lang.t("approval.allowOnce")) { onApprove?(.allowOnce) }
                     .buttonStyle(IslandActionButtonStyle(kind: .warning, expands: true))
-                if let toolName = session.permissionRequest?.toolName {
+                // Advisory requests are answered by pressing "1"/Esc in the
+                // CLI's own dialog, which can't apply an "always allow" rule —
+                // and the dialog's second option has per-dialog semantics
+                // (sometimes a scoped always-allow, sometimes "No"), so a
+                // blind "2" keypress isn't safe. Offer the button only for
+                // blocking requests where the rule goes back through the hook.
+                if session.permissionRequest?.requiresTerminalApproval != true,
+                   let toolName = session.permissionRequest?.toolName {
                     Button(lang.t("approval.alwaysAllow", toolName)) {
                         let rule = ClaudePermissionRuleValue(toolName: toolName)
                         let update = ClaudePermissionUpdate.addRules(
