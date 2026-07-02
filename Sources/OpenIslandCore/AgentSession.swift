@@ -366,6 +366,15 @@ public enum ApprovalAction: Sendable {
     case deny
     case allowOnce
     case allowWithUpdates([ClaudePermissionUpdate])
+
+    public var isApproval: Bool {
+        switch self {
+        case .deny:
+            false
+        case .allowOnce, .allowWithUpdates:
+            true
+        }
+    }
 }
 
 public enum PermissionResolution: Equatable, Codable, Sendable {

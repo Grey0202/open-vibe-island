@@ -16,6 +16,13 @@ struct TerminalTextSender {
     static func canReply(to session: AgentSession, enabled: Bool) -> Bool {
         guard enabled else { return false }
         guard session.phase == .completed else { return false }
+        return supportsInjection(session)
+    }
+
+    /// Whether the session's terminal can receive injected keystrokes at all,
+    /// regardless of session phase. Used by advisory permission cards, whose
+    /// buttons act by pressing keys in the CLI's native dialog.
+    static func supportsInjection(_ session: AgentSession) -> Bool {
         guard let target = session.jumpTarget else { return false }
 
         // tmux sessions: any terminal can receive send-keys.
@@ -24,6 +31,57 @@ struct TerminalTextSender {
         // Ghostty: native AppleScript input text (1.3.0+).
         let app = target.terminalApp.lowercased()
         if app == "ghostty" { return true }
+
+        return false
+    }
+
+    // MARK: - Approval keystrokes
+
+    /// A single keypress aimed at the CLI's native permission dialog.
+    enum ApprovalKeystroke {
+        /// Selects the first (affirmative) option — "1" in Claude Code dialogs.
+        case allow
+        /// Cancels the dialog — Escape in Claude Code dialogs.
+        case deny
+    }
+
+    /// Press one key in the terminal that owns `session`, without Enter.
+    /// Returns `true` on success.
+    @discardableResult
+    static func sendApprovalKeystroke(_ keystroke: ApprovalKeystroke, to session: AgentSession) -> Bool {
+        guard let target = session.jumpTarget else { return false }
+
+        if let tmuxTarget = target.tmuxTarget {
+            guard let tmuxPath = resolveTmuxPath() else { return false }
+
+            var baseArgs: [String] = []
+            if let socketPath = target.tmuxSocketPath, !socketPath.isEmpty {
+                baseArgs = ["-S", socketPath]
+            }
+
+            let keyArgs: [String]
+            switch keystroke {
+            case .allow:
+                keyArgs = ["send-keys", "-t", tmuxTarget, "-l", "1"]
+            case .deny:
+                keyArgs = ["send-keys", "-t", tmuxTarget, "Escape"]
+            }
+
+            return runProcess(tmuxPath, arguments: baseArgs + keyArgs)
+        }
+
+        let app = target.terminalApp.lowercased()
+        if app == "ghostty" {
+            let action: String
+            switch keystroke {
+            case .allow:
+                action = "input text \"1\" to targetTerminal"
+            case .deny:
+                action = "send key \"escape\" to targetTerminal"
+            }
+
+            return runAppleScript(ghosttyScript(action: action, target: target))
+        }
 
         return false
     }
@@ -75,15 +133,20 @@ struct TerminalTextSender {
         //   1. Finds the correct terminal (by session id, working directory, or name)
         //   2. Focuses it
         //   3. Sends the reply text + newline via `input text`
-        let script = ghosttySendScript(text: text, target: target)
-        return runAppleScript(script)
+        let escapedText = escapeAppleScript(text)
+        let action = """
+        input text "\(escapedText)" to targetTerminal
+            send key "enter" to targetTerminal
+        """
+        return runAppleScript(ghosttyScript(action: action, target: target))
     }
 
-    private static func ghosttySendScript(text: String, target: JumpTarget) -> String {
+    /// Wraps `action` (one or more AppleScript statements addressing
+    /// `targetTerminal`) in the boilerplate that locates the session's terminal.
+    private static func ghosttyScript(action: String, target: JumpTarget) -> String {
         let terminalSessionID = escapeAppleScript(target.terminalSessionID)
         let workingDirectory = escapeAppleScript(target.workingDirectory)
         let paneTitle = escapeAppleScript(target.paneTitle)
-        let escapedText = escapeAppleScript(text)
 
         return """
         tell application "Ghostty"
@@ -141,10 +204,8 @@ struct TerminalTextSender {
 
             if targetTerminal is missing value then return "error"
 
-            -- Send the text, then press Enter as a separate key event.
             -- `input text` sends characters; `send key` simulates a key press.
-            input text "\(escapedText)" to targetTerminal
-            send key "enter" to targetTerminal
+            \(action)
             return "ok"
         end tell
         """

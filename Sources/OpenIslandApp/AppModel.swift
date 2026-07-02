@@ -1299,12 +1299,7 @@ final class AppModel {
             return
         }
 
-        send(
-            .resolvePermission(sessionID: session.id, resolution: permissionResolution(for: approved)),
-            userMessage: approved
-                ? "Approving permission for \(session.title)."
-                : "Denying permission for \(session.title)."
-        )
+        approvePermission(for: session.id, approved: approved)
     }
 
     func answerFocusedQuestion(_ answer: String) {
@@ -1374,6 +1369,11 @@ final class AppModel {
             return
         }
 
+        if session.permissionRequest?.requiresTerminalApproval == true {
+            approveAdvisoryPermission(for: session, approved: approved)
+            return
+        }
+
         let resolution = permissionResolution(for: approved)
         dismissNotificationSurfaceIfPresent(for: sessionID)
         state.resolvePermission(sessionID: session.id, resolution: resolution)
@@ -1388,8 +1388,57 @@ final class AppModel {
         )
     }
 
+    /// Advisory permissions were already released back to the CLI, so its
+    /// native dialog is waiting in the terminal. Answer it by pressing the
+    /// matching key there; when the terminal can't receive keystrokes, jump
+    /// to it so the user can answer manually.
+    private func approveAdvisoryPermission(for session: AgentSession, approved: Bool) {
+        dismissNotificationSurfaceIfPresent(for: session.id)
+
+        guard TerminalTextSender.supportsInjection(session) else {
+            lastActionMessage = "Answer the dialog in the terminal — jumping there."
+            jumpToSession(session)
+            return
+        }
+
+        lastActionMessage = approved
+            ? "Approving in \(session.title)'s terminal…"
+            : "Denying in \(session.title)'s terminal…"
+
+        Task { [weak self] in
+            let keystroke: TerminalTextSender.ApprovalKeystroke = approved ? .allow : .deny
+            let success = await Task.detached(priority: .userInitiated) {
+                TerminalTextSender.sendApprovalKeystroke(keystroke, to: session)
+            }.value
+
+            guard let self else { return }
+
+            if success {
+                self.state.resolvePermission(
+                    sessionID: session.id,
+                    resolution: self.permissionResolution(for: approved)
+                )
+                self.synchronizeSelection()
+                self.refreshOverlayPlacementIfVisible()
+                self.lastActionMessage = approved
+                    ? "Approved in \(session.title)'s terminal."
+                    : "Denied in \(session.title)'s terminal."
+            } else {
+                self.lastActionMessage = "Couldn't reach the terminal — answer the dialog there."
+                self.jumpToSession(session)
+            }
+        }
+    }
+
     func approvePermission(for sessionID: String, action: ApprovalAction) {
         guard let session = state.session(id: sessionID) else {
+            return
+        }
+
+        if session.permissionRequest?.requiresTerminalApproval == true {
+            // Advisory cards never carry suggested updates, so any approve
+            // action maps to a plain allow-once keypress.
+            approveAdvisoryPermission(for: session, approved: action.isApproval)
             return
         }
 

@@ -68,6 +68,10 @@ public final class BridgeServer: @unchecked Sendable {
     private var pendingApprovals: [String: PendingApproval] = [:]
     private var pendingClaudeToolContexts: [String: PendingClaudeToolContext] = [:]
     private var pendingClaudeInteractions: [String: PendingClaudeInteraction] = [:]
+    /// Claude permission requests that were released back to the CLI immediately
+    /// (notify-only): the TUI shows its native dialog while the island card acts
+    /// through keystroke injection. Tracked so later hook events clear the card.
+    private var advisoryClaudePermissionSessions: Set<String> = []
     private var pendingOpenCodeInteractions: [String: PendingOpenCodeInteraction] = [:]
     private var pendingCursorInteractions: [String: PendingCursorInteraction] = [:]
     /// Caches Agent tool description from preToolUse for use by the next subagentStart.
@@ -733,8 +737,6 @@ public final class BridgeServer: @unchecked Sendable {
                     kind: .question(payload, prompt)
                 )
             } else {
-                let suggestions = payload.permissionSuggestions ?? []
-
                 emit(
                     .permissionRequested(
                         PermissionRequested(
@@ -747,17 +749,22 @@ public final class BridgeServer: @unchecked Sendable {
                                 secondaryActionTitle: "Deny",
                                 toolName: payload.toolName,
                                 toolUseID: claudeToolUseID(for: payload),
-                                suggestedUpdates: suggestions
+                                // No suggested updates: the island answers via a
+                                // single keypress, which can't apply "always allow".
+                                suggestedUpdates: [],
+                                requiresTerminalApproval: true
                             ),
                             timestamp: .now
                         )
                     )
                 )
 
-                pendingClaudeInteractions[payload.sessionID] = PendingClaudeInteraction(
-                    clientID: clientID,
-                    kind: .permission(payload)
-                )
+                // Notify-only: release the hook immediately with no decision so the
+                // CLI shows its native permission dialog (Claude Code defers the TUI
+                // dialog while a PermissionRequest hook is still running). The island
+                // card stays actionable via terminal keystroke injection.
+                advisoryClaudePermissionSessions.insert(payload.sessionID)
+                send(.response(.acknowledged), to: clientID)
             }
 
         case .postToolUse:
@@ -1803,7 +1810,9 @@ public final class BridgeServer: @unchecked Sendable {
     }
 
     private func clearStaleClaudeInteractionIfNeeded(for sessionID: String) {
-        guard pendingClaudeInteractions.removeValue(forKey: sessionID) != nil else {
+        let removedPending = pendingClaudeInteractions.removeValue(forKey: sessionID) != nil
+        let removedAdvisory = advisoryClaudePermissionSessions.remove(sessionID) != nil
+        guard removedPending || removedAdvisory else {
             return
         }
 
@@ -2194,6 +2203,7 @@ public final class BridgeServer: @unchecked Sendable {
         let toolContextCount: Int
         let agentDescriptionCount: Int
         let taskCreationCount: Int
+        var advisoryPermissionCount: Int = 0
 
         var totalCount: Int {
             toolContextCount + agentDescriptionCount + taskCreationCount
@@ -2207,7 +2217,8 @@ public final class BridgeServer: @unchecked Sendable {
             PendingClaudeStateSnapshot(
                 toolContextCount: pendingClaudeToolContexts.count,
                 agentDescriptionCount: pendingAgentDescriptions.count,
-                taskCreationCount: pendingTaskCreations.count
+                taskCreationCount: pendingTaskCreations.count,
+                advisoryPermissionCount: advisoryClaudePermissionSessions.count
             )
         }
     }
