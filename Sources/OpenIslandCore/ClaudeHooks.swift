@@ -926,6 +926,12 @@ public extension ClaudeHookPayload {
         let agent = resolvedAgentTool.displayName
 
         if let toolName {
+            // Mirror the CLI's own dialog: lead with what will actually run,
+            // not just the tool name, so the island card matches the TUI.
+            if let preview = toolInputPreview, !preview.isEmpty {
+                return "\(toolName): \(preview)"
+            }
+
             return "\(agent) wants to run \(toolName)."
         }
 
@@ -937,10 +943,8 @@ public extension ClaudeHookPayload {
             return explicitPath
         }
 
-        if let preview = toolInputPreview, !preview.isEmpty {
-            return preview
-        }
-
+        // The summary already carries the tool-input preview; repeating it
+        // here would duplicate it on the card, so fall back to the cwd.
         return cwd
     }
 

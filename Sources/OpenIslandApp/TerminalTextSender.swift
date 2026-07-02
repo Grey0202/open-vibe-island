@@ -28,9 +28,13 @@ struct TerminalTextSender {
         // tmux sessions: any terminal can receive send-keys.
         if target.tmuxTarget != nil { return true }
 
-        // Ghostty: native AppleScript input text (1.3.0+).
         let app = target.terminalApp.lowercased()
+
+        // Ghostty: native AppleScript input text (1.3.0+).
         if app == "ghostty" { return true }
+
+        // iTerm2: AppleScript `write text` on the session.
+        if app.contains("iterm") { return true }
 
         return false
     }
@@ -83,6 +87,19 @@ struct TerminalTextSender {
             return runAppleScript(ghosttyScript(action: action, target: target))
         }
 
+        if app.contains("iterm") {
+            let action: String
+            switch keystroke {
+            case .allow:
+                action = "write targetSession text \"1\" newline NO"
+            case .deny:
+                // ESC (character id 27) cancels the CLI's permission dialog.
+                action = "write targetSession text (character id 27) newline NO"
+            }
+
+            return runAppleScript(iTermScript(action: action, target: target))
+        }
+
         return false
     }
 
@@ -103,6 +120,13 @@ struct TerminalTextSender {
         let app = target.terminalApp.lowercased()
         if app == "ghostty" {
             return sendViaGhostty(text, target: target)
+        }
+
+        if app.contains("iterm") {
+            let escapedText = escapeAppleScript(text)
+            return runAppleScript(
+                iTermScript(action: "write targetSession text \"\(escapedText)\"", target: target)
+            )
         }
 
         return false
@@ -205,6 +229,65 @@ struct TerminalTextSender {
             if targetTerminal is missing value then return "error"
 
             -- `input text` sends characters; `send key` simulates a key press.
+            \(action)
+            return "ok"
+        end tell
+        """
+    }
+
+    // MARK: - iTerm2
+
+    /// Wraps `action` (an AppleScript statement addressing `targetSession`)
+    /// in the boilerplate that locates the session's iTerm2 pane. Matching
+    /// order: session UUID (ITERM_SESSION_ID suffix), then tty, then cwd.
+    private static func iTermScript(action: String, target: JumpTarget) -> String {
+        let terminalSessionID = escapeAppleScript(target.terminalSessionID)
+        let tty = escapeAppleScript(target.terminalTTY)
+        let workingDirectory = escapeAppleScript(target.workingDirectory)
+
+        return """
+        tell application "iTerm2"
+            if not (it is running) then return "error"
+
+            set targetSession to missing value
+
+            repeat with aWindow in windows
+                repeat with aTab in tabs of aWindow
+                    repeat with aSession in sessions of aTab
+                        -- ITERM_SESSION_ID looks like "w0t0p0:UUID"; the
+                        -- AppleScript session id is the bare UUID.
+                        if "\(terminalSessionID)" is not "" and "\(terminalSessionID)" contains (id of aSession as text) then
+                            set targetSession to aSession
+                        else if "\(tty)" is not "" and (tty of aSession as text) is "\(tty)" then
+                            set targetSession to aSession
+                        end if
+                        if targetSession is not missing value then exit repeat
+                    end repeat
+                    if targetSession is not missing value then exit repeat
+                end repeat
+                if targetSession is not missing value then exit repeat
+            end repeat
+
+            -- Fallback: match by working directory (session variable "path").
+            if targetSession is missing value and "\(workingDirectory)" is not "" then
+                repeat with aWindow in windows
+                    repeat with aTab in tabs of aWindow
+                        repeat with aSession in sessions of aTab
+                            try
+                                if (variable aSession named "path") is "\(workingDirectory)" then
+                                    set targetSession to aSession
+                                end if
+                            end try
+                            if targetSession is not missing value then exit repeat
+                        end repeat
+                        if targetSession is not missing value then exit repeat
+                    end repeat
+                    if targetSession is not missing value then exit repeat
+                end repeat
+            end if
+
+            if targetSession is missing value then return "error"
+
             \(action)
             return "ok"
         end tell
