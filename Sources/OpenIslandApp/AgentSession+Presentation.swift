@@ -183,20 +183,23 @@ extension AgentSession {
     }
 
     var spotlightHeadlineText: String {
-        // Topic-first: the conversation's initial prompt distinguishes sessions
-        // far better than the terminal tab name, which is frequently a generic
-        // "Claude <dir>" shared by every session in the same directory. Only
-        // when no prompt was captured (e.g. a transcript-discovered session
-        // with no hook metadata) do we fall back to the tab title / workspace.
-        if let prompt = spotlightHeadlinePromptText, !prompt.isEmpty {
-            return prompt
+        var location = spotlightPaneTitle ?? spotlightWorkspaceName
+        if let branch = spotlightWorktreeBranch {
+            location += " (\(branch))"
         }
 
-        var headline = spotlightPaneTitle ?? spotlightWorkspaceName
-        if let branch = spotlightWorktreeBranch {
-            headline += " (\(branch))"
+        // Topic-first: the conversation's initial prompt distinguishes sessions
+        // far better than the terminal tab name, which is frequently a generic
+        // "Claude <dir>" shared by every session in the same directory. The
+        // workspace/branch suffix keeps two similar prompts in different repos
+        // tellable apart. Only when no prompt was captured (e.g. a
+        // transcript-discovered session with no hook metadata) does the
+        // location stand alone.
+        if let prompt = spotlightHeadlinePromptText, !prompt.isEmpty {
+            return location.isEmpty ? prompt : "\(prompt) · \(location)"
         }
-        return headline
+
+        return location
     }
 
     var spotlightHeadlinePromptText: String? {
