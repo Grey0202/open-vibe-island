@@ -63,4 +63,48 @@ struct BridgeServerAdvisoryPermissionTests {
         _ = try client.send(.processClaudeHook(postToolPayload), timeout: 5)
         #expect(server.pendingClaudeStateSnapshotForTests().advisoryPermissionCount == 0)
     }
+
+    @Test
+    func parallelToolCompletionDoesNotClearAdvisoryPermission() throws {
+        let socketURL = BridgeSocketLocation.uniqueTestURL()
+        let server = BridgeServer(socketURL: socketURL)
+        try server.start()
+        defer { server.stop() }
+
+        let sessionID = "claude-session-advisory-3"
+        let client = BridgeCommandClient(socketURL: socketURL)
+
+        let permissionPayload = ClaudeHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: .permissionRequest,
+            sessionID: sessionID,
+            toolName: "Bash",
+            toolUseID: "tool-use-waiting"
+        )
+        _ = try client.send(.processClaudeHook(permissionPayload), timeout: 5)
+        #expect(server.pendingClaudeStateSnapshotForTests().advisoryPermissionCount == 1)
+
+        // A different tool running in parallel finishes — the card for the
+        // still-waiting permission must survive.
+        let unrelatedPostToolPayload = ClaudeHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: .postToolUse,
+            sessionID: sessionID,
+            toolName: "Read",
+            toolUseID: "tool-use-other"
+        )
+        _ = try client.send(.processClaudeHook(unrelatedPostToolPayload), timeout: 5)
+        #expect(server.pendingClaudeStateSnapshotForTests().advisoryPermissionCount == 1)
+
+        // The matching tool completing clears it.
+        let matchingPostToolPayload = ClaudeHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: .postToolUse,
+            sessionID: sessionID,
+            toolName: "Bash",
+            toolUseID: "tool-use-waiting"
+        )
+        _ = try client.send(.processClaudeHook(matchingPostToolPayload), timeout: 5)
+        #expect(server.pendingClaudeStateSnapshotForTests().advisoryPermissionCount == 0)
+    }
 }

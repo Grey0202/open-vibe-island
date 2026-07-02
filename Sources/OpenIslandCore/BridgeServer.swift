@@ -70,8 +70,10 @@ public final class BridgeServer: @unchecked Sendable {
     private var pendingClaudeInteractions: [String: PendingClaudeInteraction] = [:]
     /// Claude permission requests that were released back to the CLI immediately
     /// (notify-only): the TUI shows its native dialog while the island card acts
-    /// through keystroke injection. Tracked so later hook events clear the card.
-    private var advisoryClaudePermissionSessions: Set<String> = []
+    /// through keystroke injection. Maps sessionID → the requesting toolUseID
+    /// (nil when unknown) so a parallel tool's postToolUse in the same session
+    /// doesn't clear a card that is still waiting.
+    private var advisoryClaudePermissions: [String: String?] = [:]
     private var pendingOpenCodeInteractions: [String: PendingOpenCodeInteraction] = [:]
     private var pendingCursorInteractions: [String: PendingCursorInteraction] = [:]
     /// Caches Agent tool description from preToolUse for use by the next subagentStart.
@@ -619,9 +621,13 @@ public final class BridgeServer: @unchecked Sendable {
         // Subagent processes fire their own hooks with agentID set.
         // The parent session already receives SubagentStart/SubagentStop events,
         // so we suppress subagent hooks to avoid creating duplicate sessions.
+        // PermissionRequest passes through: Claude Code surfaces subagent
+        // permission dialogs in the parent session's TUI, so the island must
+        // surface the matching card instead of silently dropping it.
         if payload.agentID != nil,
            payload.hookEventName != .subagentStart,
-           payload.hookEventName != .subagentStop {
+           payload.hookEventName != .subagentStop,
+           payload.hookEventName != .permissionRequest {
             send(.response(.acknowledged), to: clientID)
             return
         }
@@ -763,12 +769,12 @@ public final class BridgeServer: @unchecked Sendable {
                 // CLI shows its native permission dialog (Claude Code defers the TUI
                 // dialog while a PermissionRequest hook is still running). The island
                 // card stays actionable via terminal keystroke injection.
-                advisoryClaudePermissionSessions.insert(payload.sessionID)
+                advisoryClaudePermissions[payload.sessionID] = claudeToolUseID(for: payload)
                 send(.response(.acknowledged), to: clientID)
             }
 
         case .postToolUse:
-            clearStaleClaudeInteractionIfNeeded(for: payload.sessionID)
+            clearStaleClaudeInteractionIfNeeded(for: payload.sessionID, completedToolUseID: payload.toolUseID)
             ensureClaudeSessionExists(for: payload)
             synchronizeClaudeJumpTarget(for: payload)
             synchronizeClaudeMetadata(for: payload)
@@ -815,7 +821,7 @@ public final class BridgeServer: @unchecked Sendable {
             send(.response(.acknowledged), to: clientID)
 
         case .postToolUseFailure:
-            clearStaleClaudeInteractionIfNeeded(for: payload.sessionID)
+            clearStaleClaudeInteractionIfNeeded(for: payload.sessionID, completedToolUseID: payload.toolUseID)
             ensureClaudeSessionExists(for: payload)
             synchronizeClaudeJumpTarget(for: payload)
             synchronizeClaudeMetadata(for: payload)
@@ -1809,9 +1815,31 @@ public final class BridgeServer: @unchecked Sendable {
         )
     }
 
-    private func clearStaleClaudeInteractionIfNeeded(for sessionID: String) {
+    /// - Parameter completedToolUseID: When set (postToolUse/postToolUseFailure),
+    ///   an advisory permission is only cleared if it was raised for that same
+    ///   tool use — a parallel tool finishing must not resolve a card that is
+    ///   still waiting. Turn-boundary events pass nil and clear unconditionally.
+    private func clearStaleClaudeInteractionIfNeeded(
+        for sessionID: String,
+        completedToolUseID: String? = nil
+    ) {
         let removedPending = pendingClaudeInteractions.removeValue(forKey: sessionID) != nil
-        let removedAdvisory = advisoryClaudePermissionSessions.remove(sessionID) != nil
+
+        var removedAdvisory = false
+        if let advisoryToolUseID = advisoryClaudePermissions[sessionID] {
+            let matchesCompletedTool: Bool
+            if let completedToolUseID, let advisoryToolUseID {
+                matchesCompletedTool = completedToolUseID == advisoryToolUseID
+            } else {
+                matchesCompletedTool = true
+            }
+
+            if matchesCompletedTool {
+                advisoryClaudePermissions.removeValue(forKey: sessionID)
+                removedAdvisory = true
+            }
+        }
+
         guard removedPending || removedAdvisory else {
             return
         }
@@ -2218,7 +2246,7 @@ public final class BridgeServer: @unchecked Sendable {
                 toolContextCount: pendingClaudeToolContexts.count,
                 agentDescriptionCount: pendingAgentDescriptions.count,
                 taskCreationCount: pendingTaskCreations.count,
-                advisoryPermissionCount: advisoryClaudePermissionSessions.count
+                advisoryPermissionCount: advisoryClaudePermissions.count
             )
         }
     }

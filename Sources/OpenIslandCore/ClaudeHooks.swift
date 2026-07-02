@@ -935,6 +935,10 @@ public extension ClaudeHookPayload {
             return "\(agent) wants to run \(toolName)."
         }
 
+        if let preview = toolInputPreview, !preview.isEmpty {
+            return preview
+        }
+
         return "\(agent) needs permission to continue."
     }
 

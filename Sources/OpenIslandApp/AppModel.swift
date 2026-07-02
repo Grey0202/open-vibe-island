@@ -542,6 +542,12 @@ final class AppModel {
     /// session's own terminal is frontmost. Keyed by session id.
     private var runningTurnStartBySession: [String: Date] = [:]
 
+    /// Duration of each session's most recently completed turn, settled by
+    /// `trackRunningTurnStart` at completion time and consumed by
+    /// `completedTurnWasLongRunning`. Overwritten on every completion, so a
+    /// value skipped by the notification scheduler can't go stale.
+    private var completedTurnDurationBySession: [String: TimeInterval] = [:]
+
     /// A completed turn only overrides frontmost-notification suppression when
     /// it ran at least this long. Shorter turns (back-and-forth chat) stay
     /// suppressed while the user is looking at that terminal, matching the
@@ -1414,10 +1420,25 @@ final class AppModel {
             guard let self else { return }
 
             if success {
-                self.state.resolvePermission(
-                    sessionID: session.id,
-                    resolution: self.permissionResolution(for: approved)
-                )
+                if approved {
+                    self.state.resolvePermission(
+                        sessionID: session.id,
+                        resolution: self.permissionResolution(for: approved)
+                    )
+                } else {
+                    // Escape only cancels the CLI's dialog — the session keeps
+                    // running (Claude reacts to the rejection), so don't mark
+                    // it completed the way a hook-delivered deny would.
+                    self.state.apply(
+                        .actionableStateResolved(
+                            ActionableStateResolved(
+                                sessionID: session.id,
+                                summary: "Denied in the terminal dialog.",
+                                timestamp: .now
+                            )
+                        )
+                    )
+                }
                 self.synchronizeSelection()
                 self.refreshOverlayPlacementIfVisible()
                 self.lastActionMessage = approved
@@ -1601,23 +1622,34 @@ final class AppModel {
             return
         }
 
-        if session.phase == .running {
+        switch session.phase {
+        case .running, .waitingForApproval, .waitingForAnswer:
             if runningTurnStartBySession[sessionID] == nil {
                 runningTurnStartBySession[sessionID] = Date.now
+            }
+        case .completed:
+            // Settle the turn on every completion so a stale start can never
+            // leak into a later turn's measurement — the notification
+            // scheduler may early-return (notch open, duplicate completion)
+            // without ever consuming the entry.
+            if let start = runningTurnStartBySession.removeValue(forKey: sessionID) {
+                completedTurnDurationBySession[sessionID] = Date.now.timeIntervalSince(start)
+            } else {
+                completedTurnDurationBySession.removeValue(forKey: sessionID)
             }
         }
     }
 
     /// Whether the just-completed turn ran long enough to count as a real task
-    /// (vs. a quick reply). Consumes the recorded start time. Defaults to
-    /// `true` when no start was observed, so completions are never silently
+    /// (vs. a quick reply). Consumes the recorded duration. Defaults to
+    /// `true` when no duration was observed, so completions are never silently
     /// dropped just because the running transition wasn't seen.
     private func completedTurnWasLongRunning(sessionID: String) -> Bool {
-        guard let start = runningTurnStartBySession.removeValue(forKey: sessionID) else {
+        guard let duration = completedTurnDurationBySession.removeValue(forKey: sessionID) else {
             return true
         }
 
-        return Date.now.timeIntervalSince(start) >= Self.frontmostCompletionMinimumTurnDuration
+        return duration >= Self.frontmostCompletionMinimumTurnDuration
     }
 
     private func scheduleNotificationSurfacePresentationIfNeeded(

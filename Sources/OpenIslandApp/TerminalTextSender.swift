@@ -238,12 +238,14 @@ struct TerminalTextSender {
     // MARK: - iTerm2
 
     /// Wraps `action` (an AppleScript statement addressing `targetSession`)
-    /// in the boilerplate that locates the session's iTerm2 pane. Matching
-    /// order: session UUID (ITERM_SESSION_ID suffix), then tty, then cwd.
+    /// in the boilerplate that locates the session's iTerm2 pane. Matching is
+    /// by session UUID (ITERM_SESSION_ID suffix) or tty only — both uniquely
+    /// identify a pane. There is deliberately no cwd fallback: two panes can
+    /// share a working directory, and injecting keystrokes into the wrong
+    /// pane is worse than failing (callers fall back to jumping there).
     private static func iTermScript(action: String, target: JumpTarget) -> String {
         let terminalSessionID = escapeAppleScript(target.terminalSessionID)
         let tty = escapeAppleScript(target.terminalTTY)
-        let workingDirectory = escapeAppleScript(target.workingDirectory)
 
         return """
         tell application "iTerm2"
@@ -267,24 +269,6 @@ struct TerminalTextSender {
                 end repeat
                 if targetSession is not missing value then exit repeat
             end repeat
-
-            -- Fallback: match by working directory (session variable "path").
-            if targetSession is missing value and "\(workingDirectory)" is not "" then
-                repeat with aWindow in windows
-                    repeat with aTab in tabs of aWindow
-                        repeat with aSession in sessions of aTab
-                            try
-                                if (variable aSession named "path") is "\(workingDirectory)" then
-                                    set targetSession to aSession
-                                end if
-                            end try
-                            if targetSession is not missing value then exit repeat
-                        end repeat
-                        if targetSession is not missing value then exit repeat
-                    end repeat
-                    if targetSession is not missing value then exit repeat
-                end repeat
-            end if
 
             if targetSession is missing value then return "error"
 

@@ -182,7 +182,7 @@ extension JumpTarget {
     /// here, next to the generators, so the App-layer headline filter and the
     /// bridge merge logic agree on one definition instead of drifting apart.
     private static let syntheticPaneTitlePrefixes: Set<String> = [
-        "Claude", "Codex", "Gemini", "Cursor",
+        "Claude", "Codex", "Gemini", "Cursor", "OpenCode",
     ]
 
     /// True when `title` looks like a generated `<Agent> <id-prefix>`
