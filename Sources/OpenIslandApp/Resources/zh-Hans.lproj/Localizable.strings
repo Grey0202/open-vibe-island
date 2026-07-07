@@ -218,6 +218,7 @@
 "question.otherPlaceholder" = "输入你的回答…";
 "question.sendReply" = "发送回复";
 "question.sendAnswer" = "提交答案";
+"question.answerInTerminal" = "去终端回答";
 
 /* Island Panel - Completion */
 "completion.done" = "完成";

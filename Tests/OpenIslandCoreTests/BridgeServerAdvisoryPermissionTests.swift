@@ -107,4 +107,56 @@ struct BridgeServerAdvisoryPermissionTests {
         _ = try client.send(.processClaudeHook(matchingPostToolPayload), timeout: 5)
         #expect(server.pendingClaudeStateSnapshotForTests().advisoryPermissionCount == 0)
     }
+
+    @Test
+    func askUserQuestionIsReleasedImmediatelyAndClearedByCompletion() throws {
+        let socketURL = BridgeSocketLocation.uniqueTestURL()
+        let server = BridgeServer(socketURL: socketURL)
+        try server.start()
+        defer { server.stop() }
+
+        let sessionID = "claude-session-advisory-question"
+        let client = BridgeCommandClient(socketURL: socketURL)
+
+        let questionInput: ClaudeHookJSONValue = .object([
+            "questions": .array([
+                .object([
+                    "question": .string("Which environment?"),
+                    "header": .string("Env"),
+                    "options": .array([
+                        .object(["label": .string("Production"), "description": .string("")]),
+                        .object(["label": .string("Staging"), "description": .string("")]),
+                    ]),
+                    "multiSelect": .boolean(false),
+                ]),
+            ]),
+        ])
+        let questionPayload = ClaudeHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: .permissionRequest,
+            sessionID: sessionID,
+            toolName: "AskUserQuestion",
+            toolInput: questionInput,
+            toolUseID: "tool-use-question"
+        )
+
+        // Questions used to hold the hook until the island answered, which
+        // froze Claude's own TUI options; they must now release immediately
+        // and be tracked like any other advisory request.
+        let response = try client.send(.processClaudeHook(questionPayload), timeout: 5)
+        #expect(response == .acknowledged)
+        #expect(server.pendingClaudeStateSnapshotForTests().advisoryPermissionCount == 1)
+
+        // The user answered in the terminal: AskUserQuestion completes and
+        // the tracked request clears so the island card resolves.
+        let postToolPayload = ClaudeHookPayload(
+            cwd: "/tmp/worktree",
+            hookEventName: .postToolUse,
+            sessionID: sessionID,
+            toolName: "AskUserQuestion",
+            toolUseID: "tool-use-question"
+        )
+        _ = try client.send(.processClaudeHook(postToolPayload), timeout: 5)
+        #expect(server.pendingClaudeStateSnapshotForTests().advisoryPermissionCount == 0)
+    }
 }

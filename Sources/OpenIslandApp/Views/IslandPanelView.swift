@@ -1702,12 +1702,45 @@ private struct IslandSessionRow: View {
 
     // MARK: - Question action area
 
+    @ViewBuilder
     private var questionActionBody: some View {
-        StructuredQuestionPromptView(
-            prompt: session.questionPrompt,
-            lang: lang,
-            onAnswer: { onAnswer?($0) }
-        )
+        if session.questionPrompt?.requiresTerminalApproval == true {
+            advisoryQuestionActionBody
+        } else {
+            StructuredQuestionPromptView(
+                prompt: session.questionPrompt,
+                lang: lang,
+                onAnswer: { onAnswer?($0) }
+            )
+        }
+    }
+
+    /// Advisory questions were already released back to the CLI, so its own
+    /// dialog is waiting in the terminal — an answer submitted here would
+    /// never reach the agent. Preview the questions and offer the jump.
+    private var advisoryQuestionActionBody: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let questions = session.questionPrompt?.questions, !questions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(questions, id: \.question) { question in
+                        Text(question.question)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.88))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.white.opacity(0.045))
+                )
+            }
+
+            Button(lang.t("question.answerInTerminal")) { onJump() }
+                .buttonStyle(IslandActionButtonStyle(kind: .warning, expands: true))
+        }
     }
 
     // MARK: - Completion action area

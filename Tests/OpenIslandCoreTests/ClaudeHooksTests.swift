@@ -373,7 +373,7 @@ struct ClaudeHooksTests {
     }
 
     @Test
-    func claudePermissionRequestReturnsAllowDirectiveAfterApproval() async throws {
+    func claudePermissionRequestIsReleasedWithAdvisoryCard() async throws {
         let socketURL = BridgeSocketLocation.uniqueTestURL()
         let server = BridgeServer(socketURL: socketURL)
         try server.start()
@@ -404,7 +404,10 @@ struct ClaudeHooksTests {
         let preToolResponse = try BridgeCommandClient(socketURL: socketURL).send(.processClaudeHook(preToolPayload))
         #expect(preToolResponse == .acknowledged)
 
-        async let responseTask = sendOnGCDThread(.processClaudeHook(permissionPayload), socketURL: socketURL)
+        // Notify-only contract: the hook must be acknowledged right away —
+        // no decision comes back through the socket.
+        let response = try BridgeCommandClient(socketURL: socketURL).send(.processClaudeHook(permissionPayload))
+        #expect(response == .acknowledged)
 
         var iterator = stream.makeAsyncIterator()
         let permissionEvent = try await nextMatchingEvent(from: &iterator, maxEvents: 8) { event in
@@ -418,24 +421,14 @@ struct ClaudeHooksTests {
             #expect(payload.request.toolName == "Bash")
             #expect(payload.request.toolUseID == "tool-use-1")
             #expect(payload.request.primaryActionTitle == "Allow Once")
+            #expect(payload.request.requiresTerminalApproval)
         } else {
             Issue.record("Expected a Claude permission request event")
         }
-
-        try await observer.send(.resolvePermission(sessionID: "claude-session-1", resolution: .allowOnce()))
-
-        let response = try await responseTask
-        guard case let .some(.claudeHookDirective(.permissionRequest(.allow(updatedInput, updatedPermissions)))) = response else {
-            Issue.record("Expected an allow directive for Claude permission request")
-            return
-        }
-
-        #expect(updatedPermissions.isEmpty)
-        #expect(updatedInput == toolInput)
     }
 
     @Test
-    func claudeAskUserQuestionReturnsUpdatedAnswers() async throws {
+    func claudeAskUserQuestionReleasesHookImmediately() async throws {
         let socketURL = BridgeSocketLocation.uniqueTestURL()
         let server = BridgeServer(socketURL: socketURL)
         try server.start()
@@ -487,7 +480,13 @@ struct ClaudeHooksTests {
 
         _ = try BridgeCommandClient(socketURL: socketURL).send(.processClaudeHook(preToolPayload))
 
-        async let responseTask = sendOnGCDThread(.processClaudeHook(permissionPayload), socketURL: socketURL)
+        // AskUserQuestion follows the same notify-only contract as plain
+        // permissions: holding the hook froze Claude's TUI options while the
+        // island card could be invisible (subagent filter, frontmost
+        // suppression), deadlocking the session. The hook must be released
+        // immediately and the card marked answer-in-terminal.
+        let response = try BridgeCommandClient(socketURL: socketURL).send(.processClaudeHook(permissionPayload))
+        #expect(response == .acknowledged)
 
         var iterator = stream.makeAsyncIterator()
         let questionEvent = try await nextMatchingEvent(from: &iterator, maxEvents: 8) { event in
@@ -500,32 +499,10 @@ struct ClaudeHooksTests {
         if case let .questionAsked(payload) = questionEvent {
             #expect(payload.prompt.questions.count == 2)
             #expect(payload.prompt.questions.first?.header == "Env")
+            #expect(payload.prompt.requiresTerminalApproval)
         } else {
             Issue.record("Expected a Claude AskUserQuestion event")
         }
-
-        try await observer.send(
-            .answerQuestion(
-                sessionID: "claude-session-question",
-                response: QuestionPromptResponse(
-                    answers: [
-                        "Which environment?": "Staging",
-                        "Which checks?": "Lint, Unit tests",
-                    ]
-                )
-            )
-        )
-
-        let response = try await responseTask
-        guard case let .some(.claudeHookDirective(.permissionRequest(.allow(updatedInput, _)))) = response,
-              case let .object(root)? = updatedInput,
-              case let .object(answers)? = root["answers"] else {
-            Issue.record("Expected AskUserQuestion answers to round-trip through updatedInput")
-            return
-        }
-
-        #expect(answers["Which environment?"] == .string("Staging"))
-        #expect(answers["Which checks?"] == .string("Lint, Unit tests"))
     }
 
     @Test
@@ -841,18 +818,3 @@ private func option(label: String, description: String) -> ClaudeHookJSONValue {
     ])
 }
 
-private func sendOnGCDThread(
-    _ command: BridgeCommand,
-    socketURL: URL
-) async throws -> BridgeResponse? {
-    try await withCheckedThrowingContinuation { continuation in
-        DispatchQueue.global().async {
-            do {
-                let response = try BridgeCommandClient(socketURL: socketURL).send(command)
-                continuation.resume(returning: response)
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
-    }
-}

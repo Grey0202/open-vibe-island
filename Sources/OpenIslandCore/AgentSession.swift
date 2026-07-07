@@ -287,28 +287,50 @@ public struct QuestionPrompt: Equatable, Identifiable, Codable, Sendable {
     public var title: String
     public var options: [String]
     public var questions: [QuestionPromptItem]
+    /// True when the question must be answered in the agent's own TUI dialog:
+    /// the hook was already released, so the island can only preview the
+    /// questions and jump to the terminal — a locally submitted answer would
+    /// never reach the agent.
+    public var requiresTerminalApproval: Bool
 
     public init(
         id: UUID = UUID(),
         title: String,
         options: [String],
-        questions: [QuestionPromptItem] = []
+        questions: [QuestionPromptItem] = [],
+        requiresTerminalApproval: Bool = false
     ) {
         self.id = id
         self.title = title
         self.options = options
         self.questions = questions
+        self.requiresTerminalApproval = requiresTerminalApproval
     }
 
     public init(
         id: UUID = UUID(),
         title: String,
-        questions: [QuestionPromptItem]
+        questions: [QuestionPromptItem],
+        requiresTerminalApproval: Bool = false
     ) {
         self.id = id
         self.title = title
         self.questions = questions
         self.options = questions.first?.options.map(\.label) ?? []
+        self.requiresTerminalApproval = requiresTerminalApproval
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, options, questions, requiresTerminalApproval
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        options = try container.decodeIfPresent([String].self, forKey: .options) ?? []
+        questions = try container.decodeIfPresent([QuestionPromptItem].self, forKey: .questions) ?? []
+        requiresTerminalApproval = try container.decodeIfPresent(Bool.self, forKey: .requiresTerminalApproval) ?? false
     }
 }
 

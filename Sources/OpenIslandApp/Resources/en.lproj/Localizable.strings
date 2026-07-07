@@ -218,6 +218,7 @@
 "question.otherPlaceholder" = "Type your answer…";
 "question.sendReply" = "Send reply";
 "question.sendAnswer" = "Send answer";
+"question.answerInTerminal" = "Answer in Terminal";
 
 /* Island Panel - Completion */
 "completion.done" = "Done";

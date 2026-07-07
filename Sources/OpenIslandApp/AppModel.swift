@@ -1313,10 +1313,25 @@ final class AppModel {
             return
         }
 
+        if session.questionPrompt?.requiresTerminalApproval == true {
+            answerAdvisoryQuestion(for: session)
+            return
+        }
+
         send(
             .answerQuestion(sessionID: session.id, response: QuestionPromptResponse(answer: answer)),
             userMessage: "Sending answer \"\(answer)\" for \(session.title)."
         )
+    }
+
+    /// Advisory questions were already released back to the CLI, so its
+    /// native dialog is waiting in the terminal. Answers can't be injected
+    /// reliably (multi-select, freeform notes), and a locally submitted
+    /// answer would never reach the agent — jump there instead.
+    private func answerAdvisoryQuestion(for session: AgentSession) {
+        dismissNotificationSurfaceIfPresent(for: session.id)
+        lastActionMessage = "Answer the questions in the terminal — jumping there."
+        jumpToSession(session)
     }
 
     func jumpToFocusedSession() {
@@ -1497,6 +1512,11 @@ final class AppModel {
 
     func answerQuestion(for sessionID: String, answer: QuestionPromptResponse) {
         guard let session = state.session(id: sessionID) else {
+            return
+        }
+
+        if session.questionPrompt?.requiresTerminalApproval == true {
+            answerAdvisoryQuestion(for: session)
             return
         }
 

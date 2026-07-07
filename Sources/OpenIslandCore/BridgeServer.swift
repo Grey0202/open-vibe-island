@@ -28,16 +28,6 @@ public final class BridgeServer: @unchecked Sendable {
         let tempID: String
     }
 
-    private struct PendingClaudeInteraction {
-        enum Kind {
-            case permission(ClaudeHookPayload)
-            case question(ClaudeHookPayload, QuestionPrompt)
-        }
-
-        let clientID: UUID
-        let kind: Kind
-    }
-
     private struct PendingOpenCodeInteraction {
         enum Kind {
             case permission(OpenCodeHookPayload)
@@ -67,7 +57,6 @@ public final class BridgeServer: @unchecked Sendable {
     private var clients: [UUID: ClientConnection] = [:]
     private var pendingApprovals: [String: PendingApproval] = [:]
     private var pendingClaudeToolContexts: [String: PendingClaudeToolContext] = [:]
-    private var pendingClaudeInteractions: [String: PendingClaudeInteraction] = [:]
     /// Claude permission requests that were released back to the CLI immediately
     /// (notify-only): the TUI shows its native dialog while the island card acts
     /// through keystroke injection. Maps sessionID → the requesting toolUseID
@@ -186,7 +175,6 @@ public final class BridgeServer: @unchecked Sendable {
 
     private func stopLocked() {
         pendingApprovals.removeAll()
-        pendingClaudeInteractions.removeAll()
         pendingClaudeToolContexts.removeAll()
         pendingAgentDescriptions.removeAll()
         pendingTaskCreations.removeAll()
@@ -334,12 +322,6 @@ public final class BridgeServer: @unchecked Sendable {
             send(.response(.acknowledged), to: clientID)
 
         case let .resolvePermission(sessionID, resolution):
-            if pendingClaudeInteractions[sessionID] != nil {
-                resolvePendingClaudeInteraction(sessionID: sessionID, resolution: resolution)
-                send(.response(.acknowledged), to: clientID)
-                return
-            }
-
             if pendingOpenCodeInteractions[sessionID] != nil {
                 resolvePendingOpenCodeInteraction(sessionID: sessionID, resolution: resolution)
                 send(.response(.acknowledged), to: clientID)
@@ -433,12 +415,6 @@ public final class BridgeServer: @unchecked Sendable {
             send(.response(.acknowledged), to: clientID)
 
         case let .answerQuestion(sessionID, response):
-            if pendingClaudeInteractions[sessionID] != nil {
-                resolvePendingClaudeQuestion(sessionID: sessionID, response: response)
-                send(.response(.acknowledged), to: clientID)
-                return
-            }
-
             if pendingOpenCodeInteractions[sessionID] != nil {
                 resolvePendingOpenCodeQuestion(sessionID: sessionID, response: response)
                 send(.response(.acknowledged), to: clientID)
@@ -727,7 +703,8 @@ public final class BridgeServer: @unchecked Sendable {
             synchronizeClaudeJumpTarget(for: payload)
             synchronizeClaudeMetadata(for: payload)
 
-            if let prompt = payload.questionPrompt {
+            if var prompt = payload.questionPrompt {
+                prompt.requiresTerminalApproval = true
                 emit(
                     .questionAsked(
                         QuestionAsked(
@@ -738,10 +715,14 @@ public final class BridgeServer: @unchecked Sendable {
                     )
                 )
 
-                pendingClaudeInteractions[payload.sessionID] = PendingClaudeInteraction(
-                    clientID: clientID,
-                    kind: .question(payload, prompt)
-                )
+                // Notify-only, same contract as the permission branch below:
+                // holding the hook here froze Claude's TUI (it defers its own
+                // question dialog while a PermissionRequest hook runs), and
+                // the island card could be invisible (subagent-session filter,
+                // frontmost suppression) or orphaned by a stale-interaction
+                // sweep — deadlocking the session for the full hook timeout.
+                advisoryClaudePermissions[payload.sessionID] = claudeToolUseID(for: payload)
+                send(.response(.acknowledged), to: clientID)
             } else {
                 emit(
                     .permissionRequested(
@@ -1823,8 +1804,6 @@ public final class BridgeServer: @unchecked Sendable {
         for sessionID: String,
         completedToolUseID: String? = nil
     ) {
-        let removedPending = pendingClaudeInteractions.removeValue(forKey: sessionID) != nil
-
         var removedAdvisory = false
         if let advisoryToolUseID = advisoryClaudePermissions[sessionID] {
             let matchesCompletedTool: Bool
@@ -1840,7 +1819,7 @@ public final class BridgeServer: @unchecked Sendable {
             }
         }
 
-        guard removedPending || removedAdvisory else {
+        guard removedAdvisory else {
             return
         }
 
@@ -2449,166 +2428,8 @@ public final class BridgeServer: @unchecked Sendable {
         send(.response(response), to: pendingApproval.clientID)
     }
 
-    private func resolvePendingClaudeInteraction(
-        sessionID: String,
-        resolution: PermissionResolution
-    ) {
-        guard let pendingInteraction = pendingClaudeInteractions.removeValue(forKey: sessionID) else {
-            return
-        }
-
-        let directive: ClaudeHookDirective
-        let summary: String
-        let phase: SessionPhase
-
-        switch (pendingInteraction.kind, resolution) {
-        case let (.permission(payload), .allowOnce(updatedInput, updatedPermissions)):
-            let finalInput = updatedInput ?? payload.toolInput
-            directive = .permissionRequest(
-                .allow(updatedInput: finalInput, updatedPermissions: updatedPermissions)
-            )
-            summary = payload.toolName.map { "Permission approved for \($0)." } ?? "Permission approved."
-            phase = .running
-
-        case let (.permission(_), .deny(message, interrupt)):
-            directive = .permissionRequest(
-                .deny(message: message ?? "Permission denied in Open Island.", interrupt: interrupt)
-            )
-            summary = message ?? "Permission denied in Open Island."
-            phase = .completed
-
-        case let (.question(payload, _), .allowOnce(updatedInput, updatedPermissions)):
-            let finalInput = updatedInput ?? payload.toolInput
-            directive = .permissionRequest(
-                .allow(updatedInput: finalInput, updatedPermissions: updatedPermissions)
-            )
-            summary = "\(payload.resolvedAgentTool.displayName)'s questions were answered."
-            phase = .running
-
-        case let (.question(payload, _), .deny(message, interrupt)):
-            let fallback = "Declined to answer \(payload.resolvedAgentTool.displayName)'s questions."
-            directive = .permissionRequest(
-                .deny(message: message ?? fallback, interrupt: interrupt)
-            )
-            summary = message ?? fallback
-            phase = .completed
-        }
-
-        emit(
-            phase == .completed
-                ? .sessionCompleted(
-                    SessionCompleted(
-                        sessionID: sessionID,
-                        summary: summary,
-                        timestamp: .now
-                    )
-                )
-                : .activityUpdated(
-                    SessionActivityUpdated(
-                        sessionID: sessionID,
-                        summary: summary,
-                        phase: phase,
-                        timestamp: .now
-                    )
-                )
-        )
-
-        send(.response(.claudeHookDirective(directive)), to: pendingInteraction.clientID)
-    }
-
-    private func resolvePendingClaudeQuestion(
-        sessionID: String,
-        response: QuestionPromptResponse
-    ) {
-        guard let pendingInteraction = pendingClaudeInteractions.removeValue(forKey: sessionID) else {
-            return
-        }
-
-        guard case let .question(payload, prompt) = pendingInteraction.kind else {
-            return
-        }
-
-        let updatedInput = mergedClaudeQuestionInput(
-            payload: payload,
-            prompt: prompt,
-            response: response
-        )
-        let summary = response.displaySummary.isEmpty
-            ? "Answered \(payload.resolvedAgentTool.displayName)'s questions."
-            : "Answered: \(response.displaySummary)"
-
-        emit(
-            .activityUpdated(
-                SessionActivityUpdated(
-                    sessionID: sessionID,
-                    summary: summary,
-                    phase: .running,
-                    timestamp: .now
-                )
-            )
-        )
-
-        send(
-            .response(
-                .claudeHookDirective(
-                    .permissionRequest(.allow(updatedInput: updatedInput))
-                )
-            ),
-            to: pendingInteraction.clientID
-        )
-    }
-
     private func claudeToolUseID(for payload: ClaudeHookPayload) -> String? {
         payload.toolUseID ?? pendingClaudeToolContexts[payload.permissionCorrelationKey]?.toolUseID
-    }
-
-    private func mergedClaudeQuestionInput(
-        payload: ClaudeHookPayload,
-        prompt: QuestionPrompt,
-        response: QuestionPromptResponse
-    ) -> ClaudeHookJSONValue {
-        let fallbackQuestion = prompt.questions.first?.question
-
-        var answers = response.answers
-        if answers.isEmpty,
-           let rawAnswer = response.rawAnswer,
-           !rawAnswer.isEmpty,
-           let fallbackQuestion {
-            answers[fallbackQuestion] = rawAnswer
-        }
-
-        var annotationsObject: [String: ClaudeHookJSONValue] = [:]
-        for key in response.annotations.keys.sorted() {
-            guard let annotation = response.annotations[key] else {
-                continue
-            }
-
-            var object: [String: ClaudeHookJSONValue] = [:]
-            if let preview = annotation.preview, !preview.isEmpty {
-                object["preview"] = .string(preview)
-            }
-            if let notes = annotation.notes, !notes.isEmpty {
-                object["notes"] = .string(notes)
-            }
-            if !object.isEmpty {
-                annotationsObject[key] = .object(object)
-            }
-        }
-
-        guard case let .object(existingObject) = payload.toolInput else {
-            return .object([
-                "answers": .object(answers.mapValues { .string($0) }),
-                "annotations": .object(annotationsObject),
-            ])
-        }
-
-        var updatedObject = existingObject
-        updatedObject["answers"] = .object(answers.mapValues { .string($0) })
-        if !annotationsObject.isEmpty {
-            updatedObject["annotations"] = .object(annotationsObject)
-        }
-
-        return .object(updatedObject)
     }
 
     private func emit(_ event: AgentEvent) {
@@ -2655,24 +2476,6 @@ public final class BridgeServer: @unchecked Sendable {
 
         for sessionID in pendingSessionIDs {
             pendingApprovals.removeValue(forKey: sessionID)
-            emit(
-                .actionableStateResolved(
-                    ActionableStateResolved(
-                        sessionID: sessionID,
-                        summary: "Hook process disconnected.",
-                        timestamp: .now
-                    )
-                )
-            )
-        }
-
-        let pendingClaudeSessionIDs = pendingClaudeInteractions.compactMap { entry -> String? in
-            let (sessionID, pendingInteraction) = entry
-            return pendingInteraction.clientID == clientID ? sessionID : nil
-        }
-
-        for sessionID in pendingClaudeSessionIDs {
-            pendingClaudeInteractions.removeValue(forKey: sessionID)
             emit(
                 .actionableStateResolved(
                     ActionableStateResolved(
